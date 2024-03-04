@@ -90,7 +90,7 @@ func (h Handler) syncDistributedWrite(ctx context.Context) error {
 	// iterate all rate limit zones
 	rateLimits.Range(func(zoneName, value interface{}) bool {
 		zoneNameStr := zoneName.(string)
-		zoneLimiters := value.(*sync.Map)
+		zoneLimiters := value.(*rateLimitersMap)
 
 		state.Zones[zoneNameStr] = rlStateForZone(zoneLimiters, state.Timestamp)
 
@@ -100,25 +100,18 @@ func (h Handler) syncDistributedWrite(ctx context.Context) error {
 	return writeRateLimitState(ctx, state, h.Distributed.instanceID, h.storage)
 }
 
-func rlStateForZone(zoneLimiters *sync.Map, timestamp time.Time) map[string]rlStateValue {
+func rlStateForZone(zoneLimiters *rateLimitersMap, timestamp time.Time) map[string]rlStateValue {
 	state := make(map[string]rlStateValue)
 
-	// iterate all limiters within zone
-	zoneLimiters.Range(func(key, value interface{}) bool {
-		if value == nil {
-			return true
-		}
-		rl := value.(*ringBufferRateLimiter)
-
+	zoneLimiters.mu.Lock()
+	defer zoneLimiters.mu.Unlock()
+	for key, rl := range zoneLimiters.limiters {
 		count, oldestEvent := rl.Count(timestamp)
-
-		state[key.(string)] = rlStateValue{
+		state[key] = rlStateValue{
 			Count:       count,
 			OldestEvent: oldestEvent,
 		}
-
-		return true
-	})
+	}
 
 	return state
 }

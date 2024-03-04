@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -165,30 +164,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 		// make key for the individual rate limiter in this zone
 		key := repl.ReplaceAll(rl.Key, "")
-
-		var limiter *ringBufferRateLimiter
-		loadedLimiter, ok := rl.limiters.Load(key)
-		if ok {
-			limiter = loadedLimiter.(*ringBufferRateLimiter)
-		} else {
-			var newLimiter *ringBufferRateLimiter
-			poolLimiter := ringBufPool.Get()
-			if poolLimiter == nil {
-				// Nothing is in the pool, create a new limiter.
-				newLimiter = NewRingBufferRateLimiter(rl.MaxEvents, time.Duration(rl.Window))
-			} else {
-				newLimiter = poolLimiter.(*ringBufferRateLimiter)
-			}
-
-			loadedLimiter, loaded := rl.limiters.LoadOrStore(key, newLimiter)
-			if loaded {
-				// We didn't end up needing the pool's limiter, since a concurrent request
-				// has loaded its own limiter. Store it for later use.
-				ringBufPool.Put(newLimiter)
-			}
-
-			limiter = loadedLimiter.(*ringBufferRateLimiter)
-		}
+		limiter := rl.limitersMap.getOrInsert(key, rl.MaxEvents, time.Duration(rl.Window))
 
 		if h.Distributed == nil {
 			// internal rate limiter only
@@ -245,42 +221,8 @@ func (h Handler) sweepRateLimiters(ctx context.Context) {
 	for {
 		select {
 		case <-cleanerTicker.C:
-			// iterate all rate limit zones
 			rateLimits.Range(func(key, value interface{}) bool {
-				rlMap := value.(*sync.Map)
-
-				// iterate all static and dynamic rate limiters within zone
-				rlMap.Range(func(key, value interface{}) bool {
-					if value == nil {
-						return true
-					}
-					rl := value.(*ringBufferRateLimiter)
-
-					rl.mu.Lock()
-					// no point in keeping a ring buffer of size 0 around
-					if len(rl.ring) == 0 {
-						rl.mu.Unlock()
-						rlMap.Delete(key)
-						return true
-					}
-					// get newest event in ring (should come right before oldest)
-					cursorNewest := rl.cursor - 1
-					if cursorNewest < 0 {
-						cursorNewest = len(rl.ring) - 1
-					}
-					newest := rl.ring[cursorNewest]
-					window := rl.window
-					rl.mu.Unlock()
-
-					// if newest event in memory is outside the window,
-					// the entire ring has expired and can be forgotten
-					if newest.Add(window).Before(now()) {
-						rlMap.Delete(key)
-					}
-
-					return true
-				})
-
+				value.(*rateLimitersMap).sweep()
 				return true
 			})
 
@@ -292,13 +234,6 @@ func (h Handler) sweepRateLimiters(ctx context.Context) {
 
 // rateLimits persists RL zones through config changes.
 var rateLimits = caddy.NewUsagePool()
-
-// ringBufPool reduces allocations from unneeded rate limiters.
-var ringBufPool = sync.Pool{
-	// New: func() interface{} {
-	// 	return new(ringBufferRateLimiter)
-	// },
-}
 
 // Interface guards
 var (
