@@ -83,8 +83,8 @@ func (rl *RateLimit) permissiveness() float64 {
 }
 
 type rateLimitersMap struct {
-	limiters map[string]*ringBufferRateLimiter
-	mu       sync.Mutex
+	limiters   map[string]*ringBufferRateLimiter
+	limitersMu sync.Mutex
 }
 
 func newRateLimiterMap() *rateLimitersMap {
@@ -96,8 +96,9 @@ func newRateLimiterMap() *rateLimitersMap {
 // getOrInsert returns an existing rate limiter from the map, or inserts a new
 // one with the desired settings and returns it.
 func (rlm *rateLimitersMap) getOrInsert(key string, maxEvents int, window time.Duration) *ringBufferRateLimiter {
-	rlm.mu.Lock()
-	defer rlm.mu.Unlock()
+	rlm.limitersMu.Lock()
+	defer rlm.limitersMu.Unlock()
+
 	rateLimiter, ok := rlm.limiters[key]
 	if !ok {
 		newRateLimiter := newRingBufferRateLimiter(maxEvents, window)
@@ -109,8 +110,8 @@ func (rlm *rateLimitersMap) getOrInsert(key string, maxEvents int, window time.D
 
 // updateAll updates existing rate limiters with new settings.
 func (rlm *rateLimitersMap) updateAll(maxEvents int, window time.Duration) {
-	rlm.mu.Lock()
-	defer rlm.mu.Unlock()
+	rlm.limitersMu.Lock()
+	defer rlm.limitersMu.Unlock()
 
 	for _, limiter := range rlm.limiters {
 		limiter.SetMaxEvents(maxEvents)
@@ -120,30 +121,50 @@ func (rlm *rateLimitersMap) updateAll(maxEvents int, window time.Duration) {
 
 // sweep cleans up expired rate limit states.
 func (rlm *rateLimitersMap) sweep() {
-	rlm.mu.Lock()
-	defer rlm.mu.Unlock()
+	rlm.limitersMu.Lock()
+	defer rlm.limitersMu.Unlock()
 
 	for key, rl := range rlm.limiters {
-		rl.mu.Lock()
-		// no point in keeping a ring buffer of size 0 around
-		if len(rl.ring) == 0 {
-			rl.mu.Unlock()
-			delete(rlm.limiters, key)
-			continue
-		}
-		// get newest event in ring (should come right before oldest)
-		cursorNewest := rl.cursor - 1
-		if cursorNewest < 0 {
-			cursorNewest = len(rl.ring) - 1
-		}
-		newest := rl.ring[cursorNewest]
-		window := rl.window
-		rl.mu.Unlock()
+		func(rl *ringBufferRateLimiter) {
+			rl.mu.Lock()
+			defer rl.mu.Unlock()
 
-		// if newest event in memory is outside the window,
-		// the entire ring has expired and can be forgotten
-		if newest.Add(window).Before(now()) {
-			delete(rlm.limiters, key)
+			// no point in keeping a ring buffer of size 0 around
+			if len(rl.ring) == 0 {
+				delete(rlm.limiters, key)
+				return
+			}
+
+			// get newest event in ring (should come right before oldest)
+			cursorNewest := rl.cursor - 1
+			if cursorNewest < 0 {
+				cursorNewest = len(rl.ring) - 1
+			}
+			newest := rl.ring[cursorNewest]
+			window := rl.window
+
+			// if newest event in memory is outside the window,
+			// the entire ring has expired and can be forgotten
+			if newest.Add(window).Before(now()) {
+				delete(rlm.limiters, key)
+			}
+		}(rl)
+	}
+}
+
+// rlStateForZone returns the state of all rate limiters in the map.
+func (rlm *rateLimitersMap) rlStateForZone(timestamp time.Time) map[string]rlStateValue {
+	state := make(map[string]rlStateValue)
+
+	rlm.limitersMu.Lock()
+	defer rlm.limitersMu.Unlock()
+	for key, rl := range rlm.limiters {
+		count, oldestEvent := rl.Count(timestamp)
+		state[key] = rlStateValue{
+			Count:       count,
+			OldestEvent: oldestEvent,
 		}
 	}
+
+	return state
 }

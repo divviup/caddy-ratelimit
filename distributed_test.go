@@ -109,7 +109,7 @@ func TestDistributed(t *testing.T) {
 			rlState := rlState{
 				Timestamp: testCase.peerStateTimeStamp,
 				Zones: map[string]map[string]rlStateValue{
-					zone: rlStateForZone(zoneLimiters, now()),
+					zone: zoneLimiters.rlStateForZone(now()),
 				},
 			}
 
