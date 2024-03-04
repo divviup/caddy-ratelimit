@@ -166,19 +166,28 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// make key for the individual rate limiter in this zone
 		key := repl.ReplaceAll(rl.Key, "")
 
-		// the API for sync.Pool is unfortunate: there is no LoadOrNew() method
-		// which allocates/constructs a value only if needed, so we always need
-		// to pre-allocate the value even if we never use it; we should be able
-		// to relieve some memory pressure by putting unused values back into a
-		// pool...
-		limiter := ringBufPool.Get().(*ringBufferRateLimiter)
-		if val, loaded := rl.limiters.LoadOrStore(key, limiter); loaded {
-			ringBufPool.Put(limiter) // didn't use; save for next time
-			limiter = val.(*ringBufferRateLimiter)
+		var limiter *ringBufferRateLimiter
+		loadedLimiter, ok := rl.limiters.Load(key)
+		if ok {
+			limiter = loadedLimiter.(*ringBufferRateLimiter)
 		} else {
-			// as another side-effect of sync.Map's bad API, avoid all the
-			// work of initializing the ring buffer unless we have to
-			limiter.initialize(rl.MaxEvents, time.Duration(rl.Window))
+			var newLimiter *ringBufferRateLimiter
+			poolLimiter := ringBufPool.Get()
+			if poolLimiter == nil {
+				// Nothing is in the pool, create a new limiter.
+				newLimiter = NewRingBufferRateLimiter(rl.MaxEvents, time.Duration(rl.Window))
+			} else {
+				newLimiter = poolLimiter.(*ringBufferRateLimiter)
+			}
+
+			loadedLimiter, loaded := rl.limiters.LoadOrStore(key, newLimiter)
+			if loaded {
+				// We didn't end up needing the pool's limiter, since a concurrent request
+				// has loaded its own limiter. Store it for later use.
+				ringBufPool.Put(newLimiter)
+			}
+
+			limiter = loadedLimiter.(*ringBufferRateLimiter)
 		}
 
 		if h.Distributed == nil {
@@ -286,9 +295,9 @@ var rateLimits = caddy.NewUsagePool()
 
 // ringBufPool reduces allocations from unneeded rate limiters.
 var ringBufPool = sync.Pool{
-	New: func() interface{} {
-		return new(ringBufferRateLimiter)
-	},
+	// New: func() interface{} {
+	// 	return new(ringBufferRateLimiter)
+	// },
 }
 
 // Interface guards
