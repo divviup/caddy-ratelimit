@@ -92,28 +92,12 @@ func (h Handler) syncDistributedWrite(ctx context.Context) error {
 		zoneNameStr := zoneName.(string)
 		zoneLimiters := value.(*rateLimitersMap)
 
-		state.Zones[zoneNameStr] = rlStateForZone(zoneLimiters, state.Timestamp)
+		state.Zones[zoneNameStr] = zoneLimiters.rlStateForZone(state.Timestamp)
 
 		return true
 	})
 
 	return writeRateLimitState(ctx, state, h.Distributed.instanceID, h.storage)
-}
-
-func rlStateForZone(zoneLimiters *rateLimitersMap, timestamp time.Time) map[string]rlStateValue {
-	state := make(map[string]rlStateValue)
-
-	zoneLimiters.mu.Lock()
-	defer zoneLimiters.mu.Unlock()
-	for key, rl := range zoneLimiters.limiters {
-		count, oldestEvent := rl.Count(timestamp)
-		state[key] = rlStateValue{
-			Count:       count,
-			OldestEvent: oldestEvent,
-		}
-	}
-
-	return state
 }
 
 func writeRateLimitState(ctx context.Context, state rlState, instanceID string, storage certmagic.Storage) error {
