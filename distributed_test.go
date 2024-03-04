@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -96,7 +95,7 @@ func TestDistributed(t *testing.T) {
 			if err != nil {
 				t.Fatal("failed to parse duration")
 			}
-			simulatedPeer := NewRingBufferRateLimiter(maxEvents, parsedDuration)
+			simulatedPeer := newRingBufferRateLimiter(maxEvents, parsedDuration)
 
 			for i := 0; i < testCase.peerRequests; i++ {
 				if when := simulatedPeer.When(); when != 0 {
@@ -104,8 +103,8 @@ func TestDistributed(t *testing.T) {
 				}
 			}
 
-			zoneLimiters := new(sync.Map)
-			zoneLimiters.Store("static", simulatedPeer)
+			zoneLimiters := newRateLimiterMap()
+			zoneLimiters.limiters["static"] = simulatedPeer
 
 			rlState := rlState{
 				Timestamp: testCase.peerStateTimeStamp,

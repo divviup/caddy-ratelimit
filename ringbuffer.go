@@ -30,11 +30,11 @@ type ringBufferRateLimiter struct {
 	cursor int         // always points to the oldest timestamp
 }
 
-// NewRingBufferRateLimiter sets up a new rate limiter, allowing maxEvents
+// newRingBufferRateLimiter sets up a new rate limiter, allowing maxEvents
 // in a sliding window of size window. If maxEvents is 0, no events are
 // allowed. If window is 0, all events are allowed. It panics if maxEvents or
 // window are less than zero.
-func NewRingBufferRateLimiter(maxEvents int, window time.Duration) *ringBufferRateLimiter {
+func newRingBufferRateLimiter(maxEvents int, window time.Duration) *ringBufferRateLimiter {
 	r := new(ringBufferRateLimiter)
 	if maxEvents < 0 {
 		panic("maxEvents cannot be less than zero")
